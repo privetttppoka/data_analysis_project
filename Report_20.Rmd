@@ -1,0 +1,902 @@
+---
+title: "Анализ сортов сои"
+output: 
+  html_document:
+    toc: true          
+    toc_depth: 3 
+    toc_float: 
+       collapsed: yes
+       smooth_scroll: yes
+    theme: journal   
+    highlight: zenburn
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Используемые библиотеки
+
+```{r libraries, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+install.packages("MVN")
+
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(psych)) install.packages("psych")
+if(!require(plotly)) install.packages("plotly")
+if(!require(patchwork)) install.packages("patchwork")
+if(!require(purrr)) install.packages("purrr")
+if(!require(car)) install.packages("car")
+if(!require(effects)) install.packages("effects")
+if(!require(sjPlot)) install.packages("sjPlot")
+install.packages("MVN")
+
+
+library(dplyr)
+library(ggplot2)
+library(psych)
+library(plotly)
+library(patchwork)
+library(purrr)
+library(car)
+library(effects)
+library(sjPlot)
+library(glmmTMB)
+library(agricolae)
+library(performance)  
+library(kableExtra)
+library(MVN)
+```
+
+Новые библиотеки:
+
+-   `plotly`: визуализация данных (построение графиков)
+
+-   `patchwork`: объединение графиков и более гибкая настройки
+    визуализации результатов `ggplot2`
+
+-   `effects`, `sjPlot`: проверка условий применимости смешанных
+    линейных моделей
+
+-   `purrr`: упрощает сложные манипулцяии с данными, с помощью функции
+    `map` в пакете возможно значительно сократить описание функции и
+    переменных
+
+```{r maindir, echo=FALSE}
+main_dir <- dirname(rstudioapi::getSourceEditorContext()$path) 
+setwd(main_dir)
+```
+
+# Введение
+
+Данная работа посвящена анализу сортов льна, выращиваемым в течение 5
+лет на 2 разных локациях: на Кубани и в Липецке. Начнём анализ с
+изучения переменных, по которым была собрана информация:
+
+::: {style="overflow-y: scroll; height: 300px; border: 1px solid #ddd; padding: 10px;"}
+```{r data import, echo=FALSE}
+data <- read.csv("soybean.csv")
+str(data)
+```
+:::
+
+Заметим, что в исходном датасете есть пропущенные значения и
+категориальные переменные, которые для дальнейшей работы необходимо
+будет перевести в факторные.
+
+```{r echo=FALSE}
+table_data <- data.frame(
+  Переменная = c(
+    "id", "leaf_shape", "maturation_group", "lodging_type",
+    "growth_type", "flowering_group", "pubescence_colour",
+    "corolla_colour", "origin", "productivity",
+    "vegetation_period", "protein_content", "oil_content",
+    "site", "year"
+  ),
+  Описание = c(
+    "Номер сорта", "Форма листа", "Группа созревания", "Тип полегания",
+    "Тип развития", "Группа цветения", "Цвет опушения",
+    "Цвет венчика", "Происхождение", "Продуктивность",
+    "Период от всхода до сбора урожая", "Содержание белка в семенах",
+    "Содержание масла в семенах", "Место выращивания", "Год сбора"
+  ),
+  Coding = c(
+    "300 сортов", "lanceolate/round", "от 1 (раннеспелый) до 6 (позднеспелый)", 
+    "no/leaning/yes", "determinant/indeterminant/semi_determinant", 
+    "от 1.00 (рано) до 5 (поздно), шаг 0.5", 
+    "gray/light_gray/light_tawny/tawny", "purple/white", "Страна", 
+    "г/м2", "дни", "1-100%", "1-100%", "kub (Кубань), lip (Липецк)", "2017-2021"
+  )
+)
+
+# Создание таблицы
+kable(table_data, "html", align = "c", col.names = c("Переменная", "Описание", "Вариации")) %>%
+  kable_styling(full_width = FALSE, position = "center", bootstrap_options = c("striped", "hover", "condensed"))
+
+```
+
+В выборке встречаются сорта родом из 31 страны.
+
+```{r echo=FALSE}
+sort(unique(data$origin))
+```
+
+Переменные `leaf_shape`, `lodging_type`, `growth_type`,
+`pubescence_colour`, `corolla_colour`, `origin`, `site` переведём в
+факторные.
+
+`Maturation_group` и `flowering_group` — в упорядоченные факторные.
+
+`Productivity`, `vegetation_period`, `protein_content`, `oil_content` -
+оставим в первозданном виде.
+
+::: {style="overflow-y: scroll; height: 150px; border: 1px solid #ddd; padding: 10px;"}
+```{r echo=TRUE}
+data <- data %>%
+   mutate(across(c(
+    leaf_shape, maturation_group, lodging_type, growth_type, flowering_group, 
+    pubescence_colour, corolla_colour, site, year, origin), as.factor)) %>%
+  
+  mutate(
+    maturation_group = factor(maturation_group, 
+                              levels = c(1, 2, 3, 4, 5, 6), 
+                              ordered = TRUE),
+    flowering_group = factor(flowering_group, 
+                             levels = c(1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5), 
+                             ordered = TRUE)
+  )
+
+
+```
+:::
+
+# Разведочный анализ данных
+
+Рассмотрим данные с помощью функции `summary`
+
+::: {style="overflow-y: scroll; height: 300px; border: 1px solid #ddd; padding: 10px;"}
+```{r summary, echo=FALSE}
+summary(data)
+```
+:::
+
+## Опечатки
+
+Поскольку в датасете довольно много категориальных описательных
+переменных мы проверили их на наличие опечаток и ничего не обнаружили.
+
+```{r echo=FALSE}
+sort(unique(data$leaf_shape))
+sort(unique(data$growth_type))
+sort(unique(data$lodging_type))
+sort(unique(data$pubescence_colour))
+sort(unique(data$corolla_colour))
+sort(unique(data$site))
+```
+
+## Пропущенные значения
+
+Всего в датасете у нас `r sum(is.na(data))` пропущенных значений. На
+первый взгляд их довольно много. Подробнее изучим в каких столбцах они
+встречаются:
+
+-   `origin` содержит `r sum(is.na(data$origin))` пропущенных значений.
+-   `productivity` содержит `r sum(is.na(data$productivity))`
+    пропущенных значений.
+-   `vegetation_period` содержит `r sum(is.na(data$vegetation_period))`
+    пропущенных значений.
+-   `protein_content` содержит `r sum(is.na(data$protein_content))`
+    пропущенных значений.
+-   `oil_content` содержит `r sum(is.na(data$oil_content))` пропущенных
+    значений.
+
+При удалении всех пропущенных значений объем данных для дальнейшего
+анализа уменьшается в два раза, но при этом еще и полностью пропадают
+данные о познеспелых сортах (6), поскольку по ним нет измерений по
+количественным признакам. Кроме того, мы заметили, что за 2017 год в
+Липецке не проводилось измерений:
+
+```{r}
+table(data$year, data$site)
+```
+
+Мы можем позволить себе удалить все пропущенные значения, поскольку
+данных будет всё ещё достаточно для проведения статистического анализа:
+
+::: {style="overflow-y: scroll; height: 300px; border: 1px solid #ddd; padding: 10px;"}
+```{r NA, echo=TRUE}
+data_without_na <- data %>%
+  filter(if_all(everything(), ~ !is.na(.) & . != "" & trimws(.) != ""))
+
+summary(data_without_na)
+```
+:::
+
+
+
+## Выбросы
+
+Проанализируем выбросы в численных переменных `productivity`,
+`protein_content`, `oil_content`. Стоит учесть, что это непростая задача,
+поскольку в выброке 300 разных сортов, обладающих уникальными
+признаками, потому выборка гетерогенна и сорта высоко/низкопродуктивные
+могут быть приняты как выброс.Поэтому данные для удаления стоит анализировать в
+совокупности с остальными признаками.
+
+Будем искать с помощью пакета `outliers`. Предположим, что выбросы это значения, 
+которые отклоняются более чем на 1.5 межквартильного размаха от первого и третьего квартилей.
+
+1. Продуктивность
+
+```{r}
+outliers <- boxplot.stats(data_without_na$productivity)$out
+
+ggplot(data_without_na, aes(x = maturation_group, y = productivity, group = maturation_group)) +
+  geom_boxplot(
+    outlier.shape = NA, 
+    color = "black", 
+    lwd = 1.0
+  ) +
+  geom_jitter(
+    aes(color = ifelse(productivity %in% outliers, "outlier", "normal")),
+    width = 0.2, 
+    height = 0, 
+    size = 1
+  ) +  
+  scale_color_manual(values = c("normal" = "blue", "outlier" = "#c45824")) +  
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Группа созревания",
+    y = "Продуктивность",
+    color = "Тип данных"
+  ) 
+```
+2. Содержание белка и содержание масла
+
+Можно заметить, что типы созревания, в которых встречаются выбросы по содержанию белка и масла совпадают (в групах 2,3,4 и 5). Кроме того, можно заметить, что выбросы, которые детектируются по большей части обратно-пропорциональны друг другу. Логично, что при высоком содержании масла будет низкое содержание белка. Поэтому мы решили не выбрасывать эти значения.
+
+```{r}
+outliers_p <- boxplot.stats(data_without_na$protein_content)$out
+
+plot1 <- ggplot(data_without_na, aes(x = maturation_group, y = protein_content, group = maturation_group)) +
+  geom_boxplot(
+    outlier.shape = NA, 
+    color = "black", 
+    lwd = 1.0
+  ) +
+  geom_jitter(
+    aes(color = ifelse(protein_content %in% outliers_p, "outlier", "normal")),
+    width = 0.2, 
+    height = 0, 
+    size = 1
+  ) +  
+  scale_color_manual(values = c("normal" = "blue", "outlier" = "#c45824")) +  
+  theme_minimal(base_size = 12) + 
+  labs(
+    x = "Группа созревания",
+    y = "Содержание белка %",
+  ) +
+  theme(
+    legend.position = "none",  
+  )
+
+outliers_o <- boxplot.stats(data_without_na$oil_content)$out
+
+plot2 <- ggplot(data_without_na, aes(x = maturation_group, y = oil_content, group = maturation_group)) +
+  geom_boxplot(
+    outlier.shape = NA, 
+    color = "black", 
+    lwd = 1.0
+  ) +
+  geom_jitter(
+    aes(color = ifelse(oil_content %in% outliers_o, "outlier", "normal")),
+    width = 0.2, 
+    height = 0, 
+    size = 1
+  ) +  
+  scale_color_manual(values = c("normal" = "blue", "outlier" = "#c45824")) +  
+  theme_minimal(base_size = 12) + 
+  labs(
+    x = "Группа созревания",
+    y = "Содержание масла %",
+  ) +
+  theme(
+    legend.position = "none",  
+  )
+
+combined_plot <- (plot1 | plot2) +
+  plot_annotation(
+    title = "Поиск выбросов",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  )
+
+combined_plot
+
+```
+3. Более изощренный поиск выбросов с помощью расстояния махаланобиса.
+Давайте попробуем проанализировать все численные данные по годам. 
+Предположим, что порог для выбросов - 90%. Давайте посмотрим как распределяются все наши численные данные
+внутри каждого года. Будем смотреть в зависимости от года, поскольку в зависимости от погодных условий в течение года могут меняться и физиологические параметры растений.
+
+```{r eval=FALSE, include=FALSE}
+pupupu <- data_without_na[, c("productivity", "oil_content", "protein_content")]
+
+# Рассчитываем Mahalanobis Distance
+mean_vector <- colMeans(pupupu)
+cov_matrix <- cov(pupupu)
+mahalanobis_dist <- mahalanobis(pupupu, mean_vector, cov_matrix)
+
+threshold <- qchisq(0.99, df = ncol(pupupu))  
+outliers_mah <- mahalanobis_dist > threshold
+
+# Выводим выбросы
+head(outliers, 20)
+```
+```{r echo=FALSE}
+numeric_data <- data_without_na[, c("productivity", "vegetation_period", "protein_content", "oil_content")]
+year_data <- data_without_na$year 
+
+# Получение Mahalanobis Distance
+mahalanobis_dist <- mahalanobis(numeric_data, colMeans(numeric_data), cov(numeric_data))
+
+# Добавляем результаты в исходные данные
+numeric_data$mahalanobis_dist <- mahalanobis_dist
+numeric_data$year <- year_data  
+
+# Применяем порог для выбросов (например, 85-й процентиль)
+threshold <- qchisq(0.90, df = ncol(numeric_data))  
+numeric_data$outlier <- ifelse(numeric_data$mahalanobis_dist > threshold, "outlier", "normal")
+```
+
+```{r}
+# Визуализация многомерных выбросов по годам
+library(ggplot2)
+
+ggplot(numeric_data, aes(x = year, y = mahalanobis_dist, color = outlier)) +
+  geom_boxplot(outlier.shape = NA, fill = "grey", alpha = 0.5) +
+  geom_jitter(width = 0.2, height = 0, aes(color = outlier), size = 2) +
+  scale_color_manual(values = c("normal" = "blue", "outlier" = "#c45824")) +
+  theme_minimal(base_size = 10) +
+  labs(
+    title = "Многомерные выбросы по годам",
+    x = "Год",
+    y = "Mahalanobis Distance",
+    color = "Тип выброса"
+  ) +
+  theme(legend.position = "right")
+```
+И несмотря на такой изощренный способ поиска, мы настаиваем, что лучше оставить значения, которые сильно отклоняются, потому что эти данные могут говорить о каких-то довольно ценных сортах.
+
+Проверим распределения численных величин. С помощью функции `map` в
+пакете `purr` возможно значительно сократить описание функции и
+переменных, применив `map(var, func)`
+
+```{r echo=F, fig.align="center", fig.height=6, fig.width=6}
+var <- data_without_na %>% select(productivity, protein_content, oil_content) %>% colnames() %>% unlist()
+
+var <- data %>%
+  select(productivity, protein_content, oil_content) %>%
+  colnames() %>%
+  unlist()
+
+plot_density <- function(col_name) {
+  if (is.numeric(data[[col_name]])) {
+    ggplot(data, aes(x = !!sym(col_name))) +
+      geom_density(fill = "#c45824", alpha = 0.5) +
+      labs(
+        x = col_name,
+        y = "Плотность"
+      ) +
+      theme_minimal() +
+      theme( 
+        aspect.ratio = 1  
+      )
+  }
+}
+
+density_plots <- map(var, plot_density) %>% compact()
+
+combined_density_plot <- wrap_plots(density_plots, ncol = 3) +
+  plot_annotation(
+    title = "Распределение переменных",
+    theme = theme(
+      plot.title = element_text(size = 10, face = "bold", hjust = 0.5)
+    )
+  )
+
+# Отображение
+print(combined_density_plot)
+```
+
+В целом можно отметить, что численные величины распределены относительно
+равномерно (имееются несклько пиков), но не наблюдаем значительных
+отклонений.
+
+# Проверка гипотез
+
+## Первичный анализ корреляций
+
+Знания биологии позволяют нам сказать, что содержание масла прямопропорционально связано с продуктивностью, тогда как содержание белка - обратно. Давайте посмотрим, насколько это воспроизводится на наших данных. 
+
+```{r}
+plot_1 <- ggplot(data_without_na, aes(x=productivity, y=oil_content))+
+  geom_point(shape = 21, size = 1, fill = "#c45824", color = "black") +
+  theme_minimal() +
+  labs(
+    x = "Продуктивность (г/м²)",
+    y = "Содержание масла (%)"
+  )
+
+plot_2 <- ggplot(data_without_na, aes(x=productivity, y=protein_content))+
+  geom_point(shape = 21, size = 1, fill = "#c45824", color = "black") +
+  theme_minimal() +
+  labs(
+    x = "Продуктивность (г/м²)",
+    y = "Содержание белка (%)"
+  ) 
+
+combined_plot <- (plot_1 | plot_2) +  plot_annotation(
+    title = "Распределение данных по содержанию масла и белка",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5)
+    )
+  )
+
+combined_plot
+```
+
+Проверим статистичекую значимость кореляций продуктивности с различными
+параметрами:
+
+Сначала посмотрим на нормальность наших выборок с помощью `shapiro.test`
+
+Нулевая гиполеза H0 - выборки распределены нормально 
+
+Альтернативная H1 - выборки распределены ненормально
+
+```{r}
+shapiro_var1 <- shapiro.test(data$productivity)
+print(paste("p-value для productivity:", shapiro_var1$p.value))
+
+shapiro_var2 <- shapiro.test(data$oil_content)
+print(paste("p-value для oil_content:", shapiro_var2$p.value))
+
+shapiro_var2 <- shapiro.test(data$protein_content)
+print(paste("p-value для protein_content:", shapiro_var2$p.value))
+```
+
+Видим, что выборки распределены ненормально (p-value\<0.5), применим
+корреляцию по Спирману (продуктивность и содержание масла):
+
+```{r warning=FALSE}
+cor_test_result <- cor.test(data$productivity, data$oil_content, method = "spearman")
+
+print(paste("Коэффициент корреляции Спирмена:", cor_test_result$estimate))
+print(paste("p-value:", cor_test_result$p.value))
+```
+
+Продуктивность и содержание белков:
+
+```{r warning=FALSE}
+cor_test_result <- cor.test(data$productivity, data$protein_content, method = "spearman")
+
+print(paste("Коэффициент корреляции Спирмена:", cor_test_result$estimate))
+print(paste("p-value:", cor_test_result$p.value))
+```
+
+Согласно шкале Чедокка, при абсолютном значении коэффициента корреляции
+Спирмена \< 0.03 корреляция слабая, тогда как при от 0.5 до 0.7
+заметная. В нашем случае мы обнаружили отрицательную корреляцию между
+продуктивностью и содержанием белков, тогда как продуктивность и
+содержание масел коррелируют более значимо.
+
+Взглянем на коэфициенты, используя для этого пакет `psych`.
+
+Прежде отберем в отдельный датафрейм интересующие нас количественные
+переменные
+
+```{r}
+data_num <- subset(data, select = c(productivity, oil_content, protein_content))
+```
+
+```{r}
+cor(data_num, use = "complete.obs")
+```
+
+Наблюдаем отицательную корреляцию между продуктивностью, группой
+цветения и содержанием белков. Корреляция положительна между
+продуктивностью и содержанием масла. Всё как по учебнику.
+
+## Анализ различий между группами
+
+### Влияние места происхождения на продуктивность
+
+H0 - место происхождения не влияет на продуктивность
+
+H1 - место происхождения влияет на продуктивность
+
+Посмотрим на боксплоты продуктивности в зависимости от места
+происхождения:
+
+```{r, echo=FALSE}
+ggplot(data_without_na, aes(x = productivity, y = reorder(origin, productivity), fill = origin)) +
+  geom_boxplot(
+    colour = "darkblue",
+    outlier.colour = "#c45824",
+    outlier.shape = 19,
+    outlier.size = 2
+  ) +
+  labs(
+    title = "Продуктивность по регионам",
+    x = "Продуктивность (г/м²)",
+    y = NULL,
+    fill = "Регион"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank(), 
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold", colour = "darkblue"),
+    legend.position = "right", 
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 10)
+  ) +
+   scale_fill_viridis_d(option = "C") 
+```
+По построенным боксплотам видно, что среднее групп различается, поэтому
+гипотезу стоит проверить
+
+```{r echo=TRUE, warning=FALSE}
+model2 <- aov(productivity ~ origin, data = data_without_na)
+summary(model2)
+
+```
+По полученным графикам построенной модели, определим соблюдение
+допущений:
+```{r include=FALSE}
+par(mfrow = c(2, 2))
+plot(model2)
+```
+
+Остатки распределены нормально и линейно - допущение
+выполняется, однако есть проблемы с графиком дисперсий, попробуем
+численные тесты для проверки:
+
+```{r echo=TRUE, warning=FALSE}
+performance::check_homogeneity(model2)
+```
+
+p-value \< 0.05, значит, что дисперсии между группами не равны.
+
+Попробуем
+провести тест анова Уэлча, которая является модификацией теста
+классической анова не требующей равенства дисперсий:
+
+```{r}
+model2 <- oneway.test(productivity ~ origin, data = data_without_na, var.equal = FALSE)
+model2
+```
+
+p-value - значительно ниже 0.05, поэтому мы можем отклонить нулевую
+гипотезу и предположить, что место происхождения влияет на
+продуктивность сортов. 
+
+Однако теперь невозможно использовать
+классические post hoc тесты, потому что они необходимы для моделей с
+равенством дисперсий. Все-таки попробуем создать модель несмотря на
+разницу дисперсий между группами и уже потом провести poc-hoc тесты.
+
+```{r}
+model_disp <- aov(productivity ~ origin, data = data_without_na)
+```
+
+Теперь попробуем выяснить, между каким группами возникают отличия. Для
+этого проведем тест Тьюки (Tukey HSD), который более строгий и выделяет
+следующие отличия между странами:
+
+```{r include=FALSE}
+TukeyHSD(model_disp)
+```
+
+Тест Тьюки более строгий и выделяет следующие отличия
+    между странами:
+
+-   **China - Austria**: p = 0.0009
+
+-   **Japan - Austria**: p = 0.0010
+
+-   **USA - Austria**: p = 0.0092
+
+-   **China - Belarus**: p = 0.0013
+
+-   **Japan - Belarus**: p = 0.0009
+
+-   **Russia - China**: p = 0.0000
+
+-   **Ukraine - China**: p = 0.0035
+
+-   **Czech - China**: p = 0.0110
+
+-   **Japan - France**: p = 0.0216
+
+-   **USA - Czech**: p = 0.0223
+
+Отметим, что отличия между местами произрастания замечены в странах
+находящихся в разных частях света и соотвественно различных
+климатических зонах: можно выделить страны СНГ (Россия, Беларусь,
+Украина), страны Азии (Китай, Япония), страны европейской части (Чехия,
+Франция, Австрия) и Америку.
+
+### Влияние года на продуктивность
+
+При поиске выбросов мы предполагали, что гетерогенность выборки достигается не только сортовыми различиями, но и тем, что растения в разные года различались климатические условия, что несомненно влияло на растения. Давайте проверим это гипотезу. 
+
+H0 - продуктивность не менялась от года к году
+
+H1 - продуктивность отличалась в разные года
+
+Сначала визуально оценим распределение
+
+```{r, echo=FALSE}
+ggplot(data_without_na, aes(group = year, x = year, y = productivity, fill = year)) +
+  geom_boxplot(
+    notch = TRUE, 
+    colour = "darkblue", 
+    outlier.colour = "#c45824", 
+    outlier.shape = 19, 
+    outlier.size = 2
+  ) +
+  labs(
+    title = "Распределение продуктивности по годам",
+    x = "Год",
+    y = "Продуктивность (г/м²)",
+    fill = "Год"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 12),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold", colour = "darkblue"),
+    legend.position = "right", 
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 10)
+  ) +
+  scale_fill_viridis_d(option = "C")
+```
+
+По построенным боксплотам видно, что среднее групп различается, поэтому
+гипотезу стоит проверить
+
+```{r echo=TRUE}
+model1 <- aov(productivity ~ year, data_without_na)
+summary(model1)
+```
+
+По полученным графикам построенной модели, определим 
+соблюдение допущений:
+
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+plot(model1)
+```
+
+Полученные графики кажутся приемлемыми для использования модели и
+проведения post hoc теста.
+
+В данном случае решили проверить в каких
+граппах есть значимые отличия с помощью SNK теста:
+
+```{r}
+plot(agricolae::SNK.test(model1, trt = c('year')), main = "Результаты теста SNK по годам")
+
+mtext("Продуктивность", side = 2, line = 3)  # Подпись оси Y
+mtext("Год", side = 1, line = 2)
+```
+
+Наиболее сильно климатические условия на урожайность повлияли 2019 и в
+2021, также образовалась отдельная группа, внутри которой статистически
+значимых влияний на продуктивность не обнаружено, это: 2018, 2017, 2020
+года.
+
+## Построение моделей
+
+### Линейная модель
+
+Возьмём все числовые переменные в качестве предикторов для предсказания
+продуктивности
+
+```{r}
+model_prod <- lm(productivity ~ flowering_group+maturation_group+vegetation_period+protein_content+oil_content, data_without_na)
+summary(model_prod)
+```
+
+Согласно значениям Pr(\>\|t\|) все используемые предикторы являются
+важными. Но в любом случае попробуем проанализировать как измениться
+предсказательность модели при исключении одного/нескольких предикторов
+при обнаружении мультиколлинеарности между ними.
+
+Посмотрим на графиках
+
+```{r fig.height=10}
+par(mfrow=c(2,2))
+plot(model_prod, which=1:4)
+```
+
+Оценим нормальность распределения остатков тестом Шапиро-Уилка
+
+```{r}
+shapiro.test(residuals(model_prod))
+```
+
+```         
+p-value = 0.1262 - остатки подчиняются нормальному распределению
+```
+
+Оценим коллинеарность предикторов с помощью `corr.test`
+
+```{r}
+cor(select(data, vegetation_period, protein_content, oil_content))
+```
+
+Многие из предикторов сильно коррелируют, например группа цветения c
+вегетационным периодом и группой созревания.
+
+Оценим с помощью коэффициента инфляции дисперсии (VIF) из пакета car
+мультиколлениарность предикторов:
+
+```{r}
+vif(model_prod)
+```
+
+Получили значения, не превышающие 5, однако попробуем убрать из ряда
+предикторов с наибольшим значением. Например, такие, как
+maturation_group и vegetation_period. Начнем с maturation_group
+
+```{r}
+model_prod_1 <- update(model_prod, .~. - maturation_group) 
+vif(model_prod_1)
+```
+
+Значения коэффициентов vif немного снизились для остальных предикторов.
+
+Попробуем оценить значимость всех предикторов с помощью drop1
+
+```{r}
+drop1(model_prod, test = "F") 
+```
+
+Согласно оценке, наибольшую значимость имеют предикторы: oil_content,
+vegetation_period. Наименее значимый - группа цветения
+(flowering_group).
+
+Сравним модели с помощью информационного критерия Акаике (AIC), Adjusted
+R-squared и выберем наиболее подходящую.
+
+1.  Модель с исключением из предикторов группы созревания
+    (maturation_group)
+
+```{r}
+summary(model_prod_1)
+drop1(model_prod_1)
+```
+
+Для модели 1 имеем:
+
+```         
+Adjusted R-squared:  0.3918
+```
+
+```         
+AIC: 9302.5
+```
+
+2.  Модель с исключением из предикторов группы цветения
+    (flowering_group)
+
+    ```{r}
+    model_prod_2 <- update(model_prod, .~. - flowering_group) 
+    summary(model_prod_2)
+    drop1(model_prod_2)
+    ```
+
+```         
+Для модели 2 имеем:
+Adjusted R-squared:  0.4033
+ AIC: 9279.7
+```
+
+3.  Модель с исключением из предикторов данных о вегетационном периоде
+    (vegetation_period)
+
+    ```{r}
+    model_prod_3 <- update(model_prod, .~. -vegetation_period) 
+    summary(model_prod_3)
+    drop1(model_prod_3)
+    ```
+
+```         
+Для модели 3 имеем:
+
+Adjusted R-squared:  0.3512
+AIC: 9379.7
+```
+
+При этом для исходной модели с сохранением всех предиктров:
+
+```         
+Adjusted R-squared:  0.4141
+AIC: 9258.8
+```
+
+Таким образом, точность предсказания исходной модели максимальная в
+сравнении с тремя рассмотренными выше и составляет 41.41%; также для нее
+информационный критерий Акаике был минимален
+
+Для предсказания продуктивности сортов наиболее подходящей будет модель,
+учитывающая группу цветения, вегетационный период, группу созревания,
+содержание белков и масел
+
+### Смешанная линейная модель
+
+```{r}
+model5 <- lme4::lmer(productivity ~ leaf_shape + maturation_group + lodging_type + (1 | year), data = data_without_na)
+summary(model5)
+```
+
+```{r, echo=FALSE}
+sjPlot::plot_model(model5, type='diag')
+```
+
+-   `Scaled residuals` показывают распределение остатков модели.
+    Нормальное распределение остатков позволяет предположить, что модель
+    адекватна.
+
+    **Случайные эффекты**:
+
+-   `year` имеет вариацию 464.3 и стандартное отклонение 21.55, что
+    говорит о значительном влиянии года на продуктивность.
+
+    **Фиксированные эффекты**:
+
+-   `Intercept`: Оценка пересечения равна 202.435. Это базовый уровень
+    продуктивности для группы, когда все остальные переменные равны
+    нулю.
+
+-   `leaf_shaperound`: Небольшой положительный эффект (+2.670), но он не
+    статистически значим (t value = 0.439).
+
+-   `maturation_group`: Отрицательный значимый эффект (-8.021), что
+    указывает на то, что увеличение группы созреваемости связано с
+    уменьшением продуктивности.
+
+-   `lodging_typeno`: Отрицательный эффект (-7.796) при отсутствии
+    уклона, но не статистически значимый.
+
+-   `lodging_typeyes`: Заметный отрицательный эффект (-67.445) с высоким
+    t-значением (-5.053), что указывает на значительное снижение
+    продуктивности, когда растения предрасположены к уклону.
+
+Выводы из модели показывают, что `maturation_group` и `lodging_type`
+имеют значительное влияние на продуктивность. Возможная
+предрасположенность к уклону существенно снижает продуктивность.
+
+## Вывод
+
+1\. С помощью дисперсионного анализа ANOVA мы установили, что регион происхождения влияет на продуктивность:
+отличия между местами произрастания замечены в странах
+находящихся в разных частях света и соотвественно различных
+климатических зонах.
+
+2\. С помощью дисперсионного анализа ANOVA мы установили, что продуктивность сои также отличается в зависимости от года, с чем связана часть гетерогенности и выбросов в нашей выборке. Наиболее сильно климатические условия на урожайность повлияли 2019 и в
+2021 году.
+
+3\. Подобрали модель предсказывающую продуктивность которая в качестве
+предикторов учитывает группу цветения, вегетационный период, группу
+созревания, содержание белков и масел.
