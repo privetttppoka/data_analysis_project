@@ -1,1 +1,2 @@
 # data_analysis_project
+This repository contains a comprehensive project on data processing and analysis, including exploratory data analysis (EDA) to uncover patterns and anomalies, dataset preparation involving cleaning and transformation, calculation of descriptive statistics to summarize key characteristics, and the implementation of a linear regression model to analyze relationships between variables. The project provides insights into data handling, statistical analysis, and predictive modeling. 🚀
